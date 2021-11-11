@@ -47,8 +47,12 @@ The Hyperbee index uses the following layout:
 The oplogs include one of the following message types:
 
 ```
-Commit {
+SetMeta {
   op: 1
+  writerKeys: Buffer[]
+}
+Commit {
+  op: 2
   id: string, // random generated ID
   parents: string[] // IDs of commits which preceded this commit
   message: string // a description of the commit
@@ -60,13 +64,13 @@ Commit {
   ]
 }
 Blob {
-  op: 2
+  op: 3
   hash: string // hash of this blob
   bytes: number // number of bytes in this blob
   length: number // number of chunks in this blob (which will follow this op)
 }
 BlobChunk {
-  op: 3
+  op: 4
   value: Buffer // content
 }
 ```

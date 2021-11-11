@@ -10,11 +10,12 @@ import Autobase from 'autobase'
 import Hyperbee from 'hyperbee'
 // @ts-ignore no types available yet -prf
 import HyperbeeMessages from 'hyperbee/lib/messages.js'
-import { BaseRepoCore } from './base.js'
-import { RepoWriter } from './oplog.js'
-import { Tree } from './tree.js'
-import { Commit } from './commit.js'
-import { IndexedBlob, BlobChunk } from './blob.js'
+import { BaseRepoCore } from './cores/base.js'
+import { RepoWriter, SetMeta } from './cores/oplog.js'
+import { Tree } from './structures/tree.js'
+import { Commit } from './structures/commit.js'
+import { IndexedBlob, BlobChunk } from './structures/blob.js'
+import { Staging } from './staging.js'
 import lock from './lib/lock.js'
 
 export interface RepoMeta {
@@ -67,7 +68,7 @@ export class Repo {
     this.indexBee = new Hyperbee(indexCore, {
       extension: false,
       keyEncoding: 'utf-8',
-      valueEncoding: 'json'
+      valueEncoding: 'binary'
     })
   }
 
@@ -118,6 +119,7 @@ export class Repo {
 
   async loadFromMeta () {
     const meta = (await this.indexBee.get('_meta'))?.value || {schema: 'vcr', writerKeys: []}
+    meta.writerKeys = meta.writerKeys.map((buf: Buffer) => buf.toString('hex'))
     
     const release = await lock(`loadFromMeta:${this.key.toString('hex')}`)
     try {
@@ -140,7 +142,7 @@ export class Repo {
   async persistMeta () {
     if (!this.isOwner) return
     this.meta = {schema: 'vcr', writerKeys: this.writers.map(w => w.publicKey.toString('hex'))}
-    await this.put('_meta', this.meta)
+    await this.putMeta(this.writers.map(w => w.publicKey))
   }
 
   serialize () {
@@ -214,6 +216,30 @@ export class Repo {
       } else {
         throw new Error(`Invalid chunk`)
       }
+    }
+  }
+
+  async putMeta (writerKeys: Buffer[], opts?: WriteOpts) {
+    const writer = getWriterCore(this, opts)
+    const release = await lock(`write:${this.key.toString('hex')}`)
+    try {
+      await this.autobase.append(RepoWriter.packop(new SetMeta({schema: 'vcr', writerKeys})), null, writer)
+    } finally {
+      release()
+    }
+  }
+
+  async commit (staging: Staging, message: string, opts?: WriteOpts) {
+    const writer = getWriterCore(this, opts)
+    const release = await lock(`write:${this.key.toString('hex')}`)
+    try {
+      const c = await staging.generateCommit(message)
+      await this.autobase.append(RepoWriter.packop(c), null, writer)
+      for await (const op of staging.generateBlobs(c)) {
+        await this.autobase.append(RepoWriter.packop(op), null, writer)
+      }
+    } finally {
+      release()
     }
   }
 

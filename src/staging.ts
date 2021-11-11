@@ -1,7 +1,7 @@
-import { FileTree } from './filetree.js'
+import { FileTree } from './structures/filetree.js'
 import { Repo } from './repo.js'
-import { Commit } from './commit.js'
-import { Blob, BlobChunk } from './blob.js'
+import { Commit } from './structures/commit.js'
+import { Blob, BlobChunk } from './structures/blob.js'
 import { hash, genId } from './lib/crypto.js'
 import { BLOB_CHUNK_BYTE_LENGTH } from './lib/const.js'
 
