@@ -117,7 +117,7 @@ export class Repo {
   }
 
   async loadFromMeta () {
-    const meta = (await this.indexBee.get('_meta'))?.value || {schema: 'p2wiki', writerKeys: []}
+    const meta = (await this.indexBee.get('_meta'))?.value || {schema: 'vcr', writerKeys: []}
     
     const release = await lock(`loadFromMeta:${this.key.toString('hex')}`)
     try {
@@ -139,7 +139,7 @@ export class Repo {
 
   async persistMeta () {
     if (!this.isOwner) return
-    this.meta = {schema: 'p2wiki', writerKeys: this.writers.map(w => w.publicKey.toString('hex'))}
+    this.meta = {schema: 'vcr', writerKeys: this.writers.map(w => w.publicKey.toString('hex'))}
     await this.put('_meta', this.meta)
   }
 

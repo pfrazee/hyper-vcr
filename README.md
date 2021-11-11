@@ -12,7 +12,7 @@ The Hyperbee index uses the following layout:
 
 ```
 /_meta = {
-  schema: 'untitled-file-editor-project',
+  schema: 'vcr',
   writerKeys: Buffer[]
 }
 /trees/$tree = {
