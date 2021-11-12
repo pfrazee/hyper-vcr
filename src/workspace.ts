@@ -1,25 +1,24 @@
 import { FileTree } from './structures/filetree.js'
-import { Repo } from './repo.js'
+import { Branch } from './structures/branch.js'
+import { Repo, WriteOpts } from './repo.js'
 import { Commit } from './structures/commit.js'
 import { Blob, BlobChunk } from './structures/blob.js'
 import { hash, genId } from './lib/crypto.js'
 import { BLOB_CHUNK_BYTE_LENGTH } from './lib/const.js'
 
-export class BaseFilestore {
-}
+// TODO persist blobs to the local disk
 
-export class Staging extends BaseFilestore {
-  fileTree: FileTree = new FileTree()
+export class Workspace {
+  fileTree: FileTree
   blobs: Map<string, Buffer> = new Map()
 
-  constructor (public repo: Repo) {
-    super()
+  constructor (public repo: Repo, head: Branch) {
+    this.fileTree = FileTree.fromSerialized(head.data.files)
   }
 
-  async getBlob (blobRef: string): Promise<Buffer|undefined> {
-    const blob = this.blobs.get(blobRef)
-    if (!blob) throw new BlobNotFoundError()
-    return await Promise.resolve(blob)
+  static async create (repo: Repo) {
+    const head = await repo.getBranch('main')
+    return new Workspace(repo, head)
   }
 
   list (path = '/') {
@@ -29,7 +28,7 @@ export class Staging extends BaseFilestore {
   read (path: string): Promise<Buffer|undefined> {
     const blobRef = this.fileTree.read(path)
     if (blobRef) {
-      return this.getBlob(blobRef)
+      return this._getBlob(blobRef)
     } else {
       return Promise.resolve(undefined)
     }
@@ -49,8 +48,30 @@ export class Staging extends BaseFilestore {
     return await Promise.resolve(undefined)
   }
 
-  async generateCommit (message: string): Promise<Commit> {
-    const head = await this.repo.getTree('main')
+  async commit (message: string, opts?: WriteOpts) {
+    const commit = await this._generateCommit(message)
+    const ops: Array<Commit|Blob|BlobChunk> = [commit]
+    for await (const op of this._generateCommitBlobs(commit)) {
+      ops.push(op)
+    }
+    await this.repo.putCommit(ops, opts)
+  }
+
+  async _getBlob (blobRef: string): Promise<Buffer|undefined> {
+    let blob = this.blobs.get(blobRef)
+    if (!blob) {
+      // pass through to the repo
+      const blobInfo = await this.repo.getBlobInfo(blobRef)
+      if (blobInfo) {
+        blob = await this.repo.getBlobData(blobInfo)
+      }
+    }
+    if (!blob) throw new BlobNotFoundError()
+    return await Promise.resolve(blob)
+  }
+
+  async _generateCommit (message: string): Promise<Commit> {
+    const head = await this.repo.getBranch('main')
     return new Commit({
       id: genId(),
       parents: [head.data.commit].concat(head.data.conflicts || []),
@@ -60,10 +81,10 @@ export class Staging extends BaseFilestore {
     })
   }
 
-  async* generateBlobs (commit: Commit): AsyncGenerator<Blob|BlobChunk> {
+  async* _generateCommitBlobs (commit: Commit): AsyncGenerator<Blob|BlobChunk> {
     const items = commit.data.diff.added.concat(commit.data.diff.changed)
     for (const [path, hash] of items) {
-      const blob = await this.getBlob(hash)
+      const blob = await this._getBlob(hash)
       if (!blob) continue
 
       // TODO: detect if the blob length is close to the chunk size and cheat to avoid small slices

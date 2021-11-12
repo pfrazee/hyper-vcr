@@ -1,13 +1,13 @@
 import { SerializedFileTree } from './filetree.js'
 
-export interface TreeData {
+export interface BranchData {
   commit: string
   conflicts: string[]
   files: SerializedFileTree
 }
 
-export class Tree {
-  constructor (public data: TreeData) {
+export class Branch {
+  constructor (public data: BranchData) {
     // TODO validate
   }
 }

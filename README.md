@@ -2,6 +2,18 @@
 
 A p2p version-controlled repo [Hypercore's new multiwriter Autobase](https://github.com/hypercore-protocol/autobase).
 
+## TODOs
+
+- [ ] Implement indexer _apply
+- [ ] Workspace local blob storage
+- [ ] Events / reactive APIs
+- [ ] Tests
+  - [ ] All operations
+  - [ ] Conflict resolution
+- [ ] Additional data structures
+  - [ ] Tags (versions)
+  - [ ] Comments / Annotations
+
 ## Implementation notes
 
 ### Hypercore schemas
@@ -11,12 +23,17 @@ The repo is an Autobase which uses oplog inputs and a Hyperbee for the index. Al
 The Hyperbee index uses the following layout:
 
 ```
-/_meta = {
+/_meta = Meta
+/branches/{branch} = Branch
+/commits/{branch}/{commit} = IndexedCommit
+/blobs/{hash} = IndexedBlob
+
+Meta {
   schema: 'vcr',
   writerKeys: Buffer[]
 }
-/trees/$tree = {
-  commit: string, // id of the commit that created this tree
+Branch {
+  commit: string, // id of the commit that created this branch
   conflicts: string[], // ids currently-conflicting commits
   files: [
     // path        blob-ref (hash)
@@ -24,10 +41,11 @@ The Hyperbee index uses the following layout:
     ['/bar.txt', 'sha256-dkc22..12']
   ]
 }
-/commits/$tree/$id = {
+IndexedCommit {
   id: string, // random generated ID
   writer: Buffer, // key of the core that authored the commit
   parents: string[] // IDs of commits which preceded this commit
+  branch: string // ID of the branch this commit is to
   message: string // a description of the commit
   timestamp: DateTime // local clock time of commit
   diff: {
@@ -36,7 +54,7 @@ The Hyperbee index uses the following layout:
     del: [path: string, ...]
   ]
 }
-/blobs/{hash} = {
+IndexedBlob {
   writer: Buffer // key of the input core which contains this blob
   bytes: number // number of bytes in this blob
   start: number // starting seq number
@@ -53,8 +71,9 @@ SetMeta {
 }
 Commit {
   op: 2
-  id: string, // random generated ID
+  id: string // random generated ID
   parents: string[] // IDs of commits which preceded this commit
+  branch: string // ID of the branch this commit is to
   message: string // a description of the commit
   timestamp: DateTime // local clock time of commit
   diff: {
@@ -83,4 +102,4 @@ This is a temporary design until Autoboot lands.
 
 ### Detecting conflicts in commits
 
-All commit operations have a random ID and list the parent commits by their ID. When the indexer handles a commit, it compares the listed parents to the current tree's "head commits". If one of the head commits is not included in the list of parents, the tree is put in conflict state. Conflict state is tracked by a list of commit IDs in the tree entry.
+All commit operations have a random ID and list the parent commits by their ID. When the indexer handles a commit, it compares the listed parents to the current branch's "head commits". If one of the head commits is not included in the list of parents, the branch is put in conflict state. Conflict state is tracked by a list of commit IDs in the tree entry.

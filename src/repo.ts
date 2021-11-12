@@ -12,10 +12,9 @@ import Hyperbee from 'hyperbee'
 import HyperbeeMessages from 'hyperbee/lib/messages.js'
 import { BaseRepoCore } from './cores/base.js'
 import { RepoWriter, SetMeta } from './cores/oplog.js'
-import { Tree } from './structures/tree.js'
+import { Branch } from './structures/branch.js'
 import { Commit } from './structures/commit.js'
-import { IndexedBlob, BlobChunk } from './structures/blob.js'
-import { Staging } from './staging.js'
+import { IndexedBlob, Blob, BlobChunk } from './structures/blob.js'
 import lock from './lib/lock.js'
 
 export interface RepoMeta {
@@ -78,7 +77,7 @@ export class Repo {
       index: RepoIndex.createNew(store)
     })
     await repo.ready()
-    await repo.persistMeta()
+    await repo._persistMeta()
     return repo
   }
 
@@ -88,8 +87,8 @@ export class Repo {
       index: RepoIndex.load(store, publicKey)
     })
     await repo.ready()
-    await repo.loadFromMeta()
-    await repo.watchMeta()
+    await repo._loadMeta()
+    await repo._watchMeta()
     return repo
   }
 
@@ -108,41 +107,6 @@ export class Repo {
 
   get isOwner () {
     return this.index.writable
-  }
-
-  watchMeta () {
-    this.index.core.on('append', () => {
-      // TODO can we make this less stupid?
-      this.loadFromMeta()
-    })
-  }
-
-  async loadFromMeta () {
-    const meta = (await this.indexBee.get('_meta'))?.value || {schema: 'vcr', writerKeys: []}
-    meta.writerKeys = meta.writerKeys.map((buf: Buffer) => buf.toString('hex'))
-    
-    const release = await lock(`loadFromMeta:${this.key.toString('hex')}`)
-    try {
-      this.meta = meta
-      for (const key of meta.writerKeys) {
-        if (!this.writers.find(w => w.publicKey.toString('hex') === key)) {
-          await this.addWriter(key)
-        }
-      }
-      for (const w of this.writers) {
-        if (!meta.writerKeys.includes(w.publicKey.toString('hex'))) {
-          await this.removeWriter(w.publicKey)
-        }
-      }
-    } finally {
-      release()
-    }
-  }
-
-  async persistMeta () {
-    if (!this.isOwner) return
-    this.meta = {schema: 'vcr', writerKeys: this.writers.map(w => w.publicKey.toString('hex'))}
-    await this.putMeta(this.writers.map(w => w.publicKey))
   }
 
   serialize () {
@@ -166,7 +130,7 @@ export class Repo {
     await writer.core.ready()
     this.writers.push(writer)
     this.autobase.addInput(writer.core)
-    await this.persistMeta()
+    await this._persistMeta()
     return writer
   }
 
@@ -175,7 +139,7 @@ export class Repo {
     await writer.core.ready()
     this.writers.push(writer)
     this.autobase.addInput(writer.core)
-    await this.persistMeta()
+    await this._persistMeta()
     return writer
   }
 
@@ -185,19 +149,19 @@ export class Repo {
     if (i === -1) throw new Error('Writer not found')
     this.autobase.removeInput(this.writers[i].core)
     this.writers.splice(i, 1)
-    await this.persistMeta()
+    await this._persistMeta()
   }
 
-  async getTree (treeId: string): Promise<Tree> {
-    const entry = await this.indexBee.sub('trees').get(treeId)
-    if (entry) return new Tree(entry.value)
-    return new Tree({commit: '', conflicts: [], files: []})
+  async getBranch (branchId: string): Promise<Branch> {
+    const entry = await this.indexBee.sub('branches').get(branchId)
+    if (entry) return new Branch(entry.value)
+    return new Branch({commit: '', conflicts: [], files: []})
   }
 
-  async getCommit (treeId: string, commitId: string): Promise<Commit> {
-    const entry = await this.indexBee.sub('commits').sub(treeId).get(commitId)
+  async getCommit (branchId: string, commitId: string): Promise<Commit> {
+    const entry = await this.indexBee.sub('commits').sub(branchId).get(commitId)
     if (entry) return new Commit(entry.value)
-    throw new Error(`Commit not found: ${treeId}/${commitId}`)
+    throw new Error(`Commit not found: ${branchId}/${commitId}`)
   }
 
   async getBlobInfo (hash: string): Promise<IndexedBlob> {
@@ -219,6 +183,14 @@ export class Repo {
     }
   }
 
+  async getBlobData (info: IndexedBlob): Promise<Buffer> {
+    const chunks = []
+    for await (const chunk of this.createBlobReadIterator(info)) {
+      chunks.push(chunk)
+    }
+    return Buffer.concat(chunks)
+  }
+
   async putMeta (writerKeys: Buffer[], opts?: WriteOpts) {
     const writer = getWriterCore(this, opts)
     const release = await lock(`write:${this.key.toString('hex')}`)
@@ -229,18 +201,49 @@ export class Repo {
     }
   }
 
-  async commit (staging: Staging, message: string, opts?: WriteOpts) {
+  async putCommit (ops: Array<Commit|Blob|BlobChunk>, opts?: WriteOpts) {
     const writer = getWriterCore(this, opts)
     const release = await lock(`write:${this.key.toString('hex')}`)
     try {
-      const c = await staging.generateCommit(message)
-      await this.autobase.append(RepoWriter.packop(c), null, writer)
-      for await (const op of staging.generateBlobs(c)) {
-        await this.autobase.append(RepoWriter.packop(op), null, writer)
+      await this.autobase.append(ops.map(op => RepoWriter.packop(op)), null, writer)
+    } finally {
+      release()
+    }
+  }
+
+  _watchMeta () {
+    this.index.core.on('append', () => {
+      // TODO can we make this less stupid?
+      this._loadMeta()
+    })
+  }
+
+  async _loadMeta () {
+    const meta = (await this.indexBee.get('_meta'))?.value || {schema: 'vcr', writerKeys: []}
+    meta.writerKeys = meta.writerKeys.map((buf: Buffer) => buf.toString('hex'))
+    
+    const release = await lock(`loadMeta:${this.key.toString('hex')}`)
+    try {
+      this.meta = meta
+      for (const key of meta.writerKeys) {
+        if (!this.writers.find(w => w.publicKey.toString('hex') === key)) {
+          await this.addWriter(key)
+        }
+      }
+      for (const w of this.writers) {
+        if (!meta.writerKeys.includes(w.publicKey.toString('hex'))) {
+          await this.removeWriter(w.publicKey)
+        }
       }
     } finally {
       release()
     }
+  }
+
+  async _persistMeta () {
+    if (!this.isOwner) return
+    this.meta = {schema: 'vcr', writerKeys: this.writers.map(w => w.publicKey.toString('hex'))}
+    await this.putMeta(this.writers.map(w => w.publicKey))
   }
 
   async _apply (batch: any[], clocks: any) {
